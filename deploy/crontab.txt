@@ -1,0 +1,5 @@
+# A股打板预测 定时任务(服务器时区若为 Asia/Shanghai/CST)
+# 编辑: crontab -e   粘贴下面一行(路径改为实际部署路径)
+30 14 * * 1-5  /home/userroot/daban_tool/deploy/run.sh
+# 若服务器时区为 UTC, 改为:
+# 30 6 * * 1-5  /home/userroot/daban_tool/deploy/run.sh

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.local
+*.log
+_tmp/
+_*.txt
+t_*.txt
+.workbuddy/

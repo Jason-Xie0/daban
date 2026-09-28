@@ -184,12 +184,51 @@ def fetch_kline_tx(code: str, days=120):
         prev = c
     return rows
 
-def fetch_kline(code: str, days=120, market: int = 1):
-    """主源东财, 失败/为空自动切换腾讯备用源。返回按日期升序 list[dict]。"""
-    rows = _fetch_kline_em(code, days, market)
-    if rows:
+def _quote_one(code: str):
+    """单只实时快照(腾讯), 返回 dict 或 None。用于给滞后的日K补最新一根。"""
+    mkt = "sh" if code.startswith(("6", "9", "5")) else "sz"
+    try:
+        r = _get(f"http://qt.gtimg.cn/q={mkt}{code}", timeout=6)
+        r.encoding = "gbk"
+        body = r.text.split('="')[-1].strip().strip(';"')
+        p = body.split("~")
+        if len(p) < 40:
+            return None
+        price = float(p[3])
+        if price <= 0:           # 停牌/无成交
+            return None
+        return {"date": (p[30] or "")[:8], "name": p[1], "open": float(p[5] or 0),
+                "close": price, "high": float(p[33] or 0), "low": float(p[34] or 0),
+                "vol": _f(p[6]), "pct": _f(p[32]), "turnover": _f(p[38]), "prev_close": float(p[4])}
+    except Exception:
+        return None
+
+def _patch_last_bar(code: str, rows):
+    """K线滞后时, 用实时快照补上最新一根日K(仅当价格基准一致, 避免复权错配)。"""
+    if not rows:
         return rows
-    return fetch_kline_tx(code, days)
+    q = _quote_one(code)
+    if not q:
+        return rows
+    today = time.strftime("%Y-%m-%d")
+    if rows[-1]["date"] >= today:
+        return rows
+    last = rows[-1]["close"]
+    if not last or abs(q["prev_close"] - last) / last > 0.02:   # 基准不一致(除权等)则不补
+        return rows
+    prev_close = last
+    rows = rows + [{"date": today, "open": q["open"], "close": q["close"], "high": q["high"],
+                    "low": q["low"], "vol": q["vol"], "amount": None, "amplitude": None,
+                    "pct": round((q["close"] - prev_close) / prev_close * 100, 2),
+                    "turnover": q["turnover"]}]
+    return rows
+
+def fetch_kline(code: str, days=120, market: int = 1):
+    """主源东财, 失败/为空自动切换腾讯备用源; 结果滞后于当日时用实时快照补齐。返回按日期升序 list[dict]。"""
+    rows = _fetch_kline_em(code, days, market)
+    if not rows:
+        rows = fetch_kline_tx(code, days)
+    return _patch_last_bar(code, rows)
 
 def _fetch_kline_em(code: str, days=120, market: int = 1):
     """东财历史K线(原 fetch_kline 主体)。"""

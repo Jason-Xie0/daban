@@ -2,3 +2,5 @@ requests>=2.31
 numpy
 pandas
 scikit-learn
+# 通达信协议数据源(券商同协议, 可选): 缺失时自动跳过, 不影响主链路
+pytdx

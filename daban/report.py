@@ -15,8 +15,12 @@ def render_markdown(result):
     lines.append("# A股次日涨停(打板)预测报告")
     lines.append("")
     lines.append(f"- **生成时间**: {result.get('generated_at')}")
-    lines.append(f"- **数据时点**: {result.get('data_time')} (盘中)")
+    lines.append(f"- **数据时点**: {result.get('data_time')} (盘中) —— 表中\"买入参考价\"即本时刻快照价, 次日同一时刻价作为收益结算价")
     lines.append(f"- **市场状态**: " + result.get("market_summary", ""))
+    mf = result.get("market_factors") or {}
+    if mf:
+        lines.append(f"- **大盘要素(模型输入)**: 上证涨跌 {mf.get('idx_pct',0):+.2f}% | 上证对MA5偏离 {mf.get('idx_ma5_dev',0):+.2%} | "
+                     f"5日累计 {mf.get('idx_mom5',0):+.2f}% | 全市场上涨占比 {mf.get('breadth_up',0):.1%} | 涨停占比 {mf.get('zt_share',0):.2%}")
     lines.append(f"- **模型样本**: 训练样本 {result.get('n_samples', '-')} 个, 触板正样本 {result.get('n_pos', '-')} 个, 基线触板率 {result.get('base_rate', 0):.2%}")
     bt = result.get("backtest") or {}
     if bt and "top10" in bt:
@@ -29,20 +33,41 @@ def render_markdown(result):
         lines.append("")
         lines.append("## 滚动实测战绩 (1日预测/次日回测, 真实行情核验)")
         lines.append("")
-        lines.append("| 预测日 | 样本数 | Top5 触板/封板 | Top10 触板/封板 | Top30 触板/封板 |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| 预测日 | 样本数 | Top5 触板/封板 | Top10 触板/封板 | Top30 触板/封板 | Top5 收益 | Top10 收益 | Top30 收益 |")
+        lines.append("|---|---|---|---|---|---|---|---|")
         for t in tr:
-            lines.append(f"| {t['date']} | {t['n']} | {t.get('top5','-')} | {t.get('top10','-')} | {t.get('top30','-')} |")
+            lines.append(f"| {t['date']} | {t['n']} | {t.get('top5','-')} | {t.get('top10','-')} | {t.get('top30','-')} | "
+                         f"{t.get('ret5','-')} | {t.get('ret10','-')} | {t.get('ret30','-')} |")
+    rs = result.get("ret_stats")
+    if rs:
+        lines.append("")
+        lines.append(f"## 预测收益实测 (买入价=预测时刻价, 结算价=次日同一时刻价)")
+        lines.append("")
+        lines.append(f"- 统计区间: {rs['first']} ~ {rs['last']} 共 {rs['days']} 个预测日")
+        lines.append("")
+        lines.append("| 档位 | 平均日收益 | 胜率(收益>0) | 等权累计 |")
+        lines.append("|---|---|---|---|")
+        for k, name in (("top5", "Top5"), ("top10", "Top10"), ("top30", "Top30")):
+            v = rs.get(k)
+            if not v:
+                continue
+            lines.append(f"| {name} | {v['avg']:+.2%} | {v['win']:.0%} | {v['cum']:+.2%} |")
+        lines.append("")
+        lines.append("> 口径说明: 买入价取预测当刻(约14:30)快照价, 结算价取**次日预测当刻**快照价; "
+                     "该日快照缺失时退化为次日收盘价(已在档案中标记)。收益为等权、未计交易成本与滑点, "
+                     "打板标的常存在开盘一字无法买入的情形, 实际可得收益低于此表。")
     lines.append("")
     lines.append("> ⚠️ 本预测基于真实行情/量能/板块/资讯数据与历史回测，概率为模型估计值，**不构成投资建议**。涨停不可保证，请注意风险。")
     lines.append("")
     lines.append("## 次日涨停候选 Top 榜")
     lines.append("")
-    lines.append("| 排名 | 代码 | 名称 | 预测涨停概率 | 评级 | 简要理由 |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| 排名 | 代码 | 名称 | 买入参考价 | 预测涨停概率 | 评级 | 简要理由 |")
+    lines.append("|---|---|---|---|---|---|---|")
     for i, s in enumerate(result.get("top", []), 1):
         reason = (s.get("reason") or "").replace("|", "/")
-        lines.append(f"| {i} | {s['code']} | {s['name']} | **{s['prob']:.1%}** | {_rank(s['prob'])} | {reason} |")
+        px = s.get("price")
+        px_s = f"{px:.2f}" if isinstance(px, (int, float)) else "-"
+        lines.append(f"| {i} | {s['code']} | {s['name']} | {px_s} | **{s['prob']:.1%}** | {_rank(s['prob'])} | {reason} |")
     lines.append("")
     lines.append("## 关键驱动因素说明")
     for s in result.get("top", [])[:10]:

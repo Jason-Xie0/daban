@@ -5,7 +5,7 @@
 """
 import json, os, time, random, sys
 
-from . import data, features, model, reasoner, report, feedback
+from . import data, features, model, reasoner, report, feedback, market
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE_DIR = os.path.join(BASE_DIR, "state")
@@ -14,6 +14,7 @@ TOP_N = 30
 CANDIDATE_POOL = 400
 TRAIN_UNIVERSE = 600
 TRAIN_DAYS = 120
+MARKET_SNAP = {}   # 本次运行时的大盘要素(供报告展示)
 
 def log(msg):
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
@@ -73,6 +74,17 @@ def ensure_model(force_train=False):
         log("检测到待重训标记(NEED_RETRAIN), 本次强制重训")
         force_train = True
     m = None if force_train else model.load_model()
+    # 特征槽变更守卫: 模型训练时的特征列表与当前 CORE_FEATURES 不一致 -> 必须重训
+    if m:
+        old_feats = m.get("features")
+        if old_feats and list(old_feats) != list(features.CORE_FEATURES):
+            log(f"⚠️ 特征槽已变更({len(old_feats)} -> {len(features.CORE_FEATURES)}), 强制重训")
+            force_train = True
+            m = None
+        elif not old_feats and len(m.get("lr_coef", [[]])[0]) != len(features.CORE_FEATURES):
+            log("⚠️ 模型特征维度与当前特征槽不一致, 强制重训")
+            force_train = True
+            m = None
     if m and m.get("n_samples", 0) > 2000:
         log(f"✔ 使用已有模型: 样本 {m['n_samples']}, 触板率 {m['base_rate']:.3%}, 训练于 {m['trained_at']}")
         # 复用模型: 若缺回测, 用训练缓存补算
@@ -108,6 +120,15 @@ def ensure_model(force_train=False):
         rows, y = feedback.load_samples()
         log(f"  样本库回填完成: {len(rows)} 条")
     ckpt_save("train_rows", {"n_rows": len(rows), "n_pos": sum(y)})
+    # 大盘要素注入(指数真实历史 + 样本宇宙宽度代理); 失败则填中性值, 不阻塞训练
+    try:
+        imap = market.index_map(400)
+        bmap = market.daily_breadth(rows)
+        market.attach(rows, imap, bmap)
+        log(f"  大盘要素已注入: 指数 {len(imap)} 日, 宽度 {len(bmap)} 日")
+    except Exception as e:
+        log(f"⚠️ 大盘要素注入失败(按中性值处理): {e}")
+        market.attach(rows)
     _cache_save(rows, y)
     m = model.train(rows, y, save=True)
     bt = model.backtest(rows, y, k_list=(5, 10, 20))
@@ -132,7 +153,7 @@ def build_candidates():
     return snap, cands, zt
 
 # ============ 阶段3: K线 + 行业 + 资讯 -> 服务特征 + 打分 ============
-def score_candidates(cands, news_items):
+def score_candidates(cands, news_items, snap=None, indices=None):
     codes = [c["code"] for c in cands]
     log("阶段3a: 并行抓取候选K线 ...")
     kmap = data.fetch_klines_parallel(codes, days=90, workers=12)
@@ -140,6 +161,14 @@ def score_candidates(cands, news_items):
     log("阶段3b: 并行抓取行业名 ...")
     boards = data.fetch_stock_boards(codes, workers=12)
     sector_pct = {s["name"]: s["pct"] for s in data.fetch_sectors(60)}
+    mk = {}
+    try:
+        mk = market.today(snap, indices)
+        MARKET_SNAP.clear(); MARKET_SNAP.update(mk)
+        log(f"  大盘要素: 上证 {mk['idx_pct']:+.2f}% | MA5偏离 {mk['idx_ma5_dev']:+.2%} | "
+            f"5日累计 {mk['idx_mom5']:+.2f}% | 上涨占比 {mk['breadth_up']:.0%} | 涨停占比 {mk['zt_share']:.2%}")
+    except Exception as e:
+        log(f"⚠️ 大盘要素获取失败(按中性值处理): {e}")
     log("阶段3c: 计算服务特征 + 模型打分 ...")
     rows, meta = [], []
     for c in cands:
@@ -155,6 +184,7 @@ def score_candidates(cands, news_items):
         snapc["_news_samples"] = nh.get("samples")
         f = features.serve_features(code, hist, snapc)
         if f is None: continue
+        f.update(mk)                       # 大盘要素: 当日全市场同一组值
         f["_board_name"] = boards.get(code, "")
         rows.append(f)
         meta.append({"code": code, "name": c.get("name"), "snap": snapc, "news": nh})
@@ -166,6 +196,7 @@ def score_candidates(cands, news_items):
     scored = []
     for f, mt, p in zip(rows, meta, probs):
         scored.append({"code": mt["code"], "name": mt["name"], "prob": p,
+                       "price": mt["snap"].get("price"),
                        "features": f, "news": mt.get("news"),
                        "today_pct": mt["snap"].get("pct"), "board": f.get("board"),
                        "industry": mt.get("snap", {}).get("_board_name")})
@@ -206,11 +237,15 @@ def run(force_train=False):
         log(f"⚠️ 滚动回测异常(不影响本次预测): {e}")
     m, bt = ensure_model(force_train=force_train)
     snap, cands, zt = build_candidates()
+    try:
+        feedback.save_prices(snap)   # 记录本次预测时刻价, 供次日收益结算
+    except Exception as e:
+        log(f"⚠️ 预测时刻价落盘失败: {e}")
     news_items = data.fetch_news(pages=3, per_page=50)
     log(f"  资讯: {len(news_items)} 条 (新浪7x24)")
     indices = data.fetch_indices()
     market_summary = " | ".join(f"{x['name']} {x['pct']:+.2f}%" for x in indices if x.get("pct") is not None)
-    scored = score_candidates(cands, news_items)
+    scored = score_candidates(cands, news_items, snap=snap, indices=indices)
     if not scored:
         log("⚠️ 无有效候选, 退出")
         return None
@@ -224,13 +259,16 @@ def run(force_train=False):
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "data_time": time.strftime("%Y-%m-%d %H:%M"),
         "market_summary": market_summary,
+        "market_factors": dict(MARKET_SNAP),
         "indices": indices,
         "n_universe": len(snap), "n_limit_up_today": len(zt), "n_candidates": len(cands),
         "n_samples": m.get("n_samples"), "n_pos": m.get("n_pos"),
         "base_rate": m.get("base_rate", 0), "model_auc": m.get("auc"),
         "backtest": bt or {},
         "track_record": feedback.track_summary(10),
+        "ret_stats": feedback.ret_stats(10),
         "top": [{"code": s["code"], "name": s["name"], "prob": round(s["prob"], 4),
+                 "price": s.get("price"),
                  "today_pct": s.get("today_pct"), "industry": s.get("industry"),
                  "reason": s["reason"], "reason_source": s["reason_source"],
                  "detail": s["detail"], "news_n": s.get("news", {}).get("n", 0)}

@@ -135,6 +135,8 @@ CORE_FEATURES = [
     "zt_10d", "zt_20d", "streak_up",
     "above_ma5", "above_ma10", "above_ma20",
     "volatility_10", "volatility_20",
+    # 大盘要素(由 daban.market 注入, 缺失时填中性 0)
+    "idx_pct", "idx_ma5_dev", "idx_mom5", "breadth_up", "zt_share",
 ]
 
 if __name__ == "__main__":

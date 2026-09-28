@@ -224,11 +224,22 @@ def _patch_last_bar(code: str, rows):
     return rows
 
 def fetch_kline(code: str, days=120, market: int = 1):
-    """主源东财, 失败/为空自动切换腾讯备用源; 结果滞后于当日时用实时快照补齐。返回按日期升序 list[dict]。"""
+    """多源K线: 东财 -> 腾讯 -> 通达信(券商协议, 可选);
+    结果滞后于当日时用实时快照补齐。返回按日期升序 list[dict]。"""
     rows = _fetch_kline_em(code, days, market)
     if not rows:
         rows = fetch_kline_tx(code, days)
+    if not rows:
+        rows = _fetch_kline_tdx(code, days)
     return _patch_last_bar(code, rows)
+
+def _fetch_kline_tdx(code, days=120):
+    """第三源: 通达信协议(长江证券等券商同协议)。未装 pytdx 或连不通时静默返回 []。"""
+    try:
+        from . import sources_tdx
+        return sources_tdx.fetch_kline_tdx(code, days)
+    except Exception:
+        return []
 
 def _fetch_kline_em(code: str, days=120, market: int = 1):
     """东财历史K线(原 fetch_kline 主体)。"""

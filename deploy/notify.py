@@ -25,24 +25,45 @@ def load_report(path: str) -> str:
 
 
 def build_digest(md: str, top_n: int = 10) -> str:
-    """从报告中截取 标题 + TopN 候选, 控制在推送长度内。"""
+    """手机推送摘要: 标题 + 市场/大盘要素 + 预测收益实测 + TopN 候选。
+
+    报告结构固定, 按小节标题切分, 保证关键结论(含收益率)一定进推送。
+    """
     lines = md.splitlines()
-    title = ""
-    body: list[str] = []
-    started = False
+    title = next((l[2:].strip() for l in lines if l.startswith("# ")), "打板预测报告")
+
+    def section(head_kw: str, max_lines: int | None = None) -> list[str]:
+        out, grab = [], False
+        for ln in lines:
+            if ln.startswith("## "):
+                grab = head_kw in ln
+                if grab:
+                    continue
+            elif ln.startswith("# "):
+                grab = False
+            if grab:
+                out.append(ln)
+                if max_lines and len(out) >= max_lines:
+                    break
+        return out
+
+    head = []
+    seen_title = False
     for ln in lines:
-        if not title and ln.startswith("# "):
-            title = ln[2:].strip()
-        if re.match(r"^#{1,3}\s*(TOP|Top|top)", ln) or "TOP 预测" in ln:
-            started = True
-        if started:
-            body.append(ln)
-    if not body:  # 兜底: 直接取前 60 行
-        body = lines[:60]
-    text = "\n".join(body).strip()
-    if len(text) > 2800:  # 各通道对 content 长度都有限制, 截断
-        text = text[:2800] + "\n\n...(完整报告见 GitHub 仓库 reports/latest.md)"
-    return title or "打板预测报告", text
+        if ln.startswith("# ") and not seen_title:
+            seen_title = True        # 跳过一级标题本身
+            continue
+        if ln.startswith("## "):
+            break
+        if seen_title and ln.strip():
+            head.append(ln)
+    parts = [ln for ln in head if "回测口径说明" not in ln]
+    ret = section("预测收益实测", 24)
+    top = section("次日涨停候选", top_n + 3)
+    body = "\n".join(parts + ([""] + ret if ret else []) + ([""] + top if top else []))
+    if len(body) > 2900:
+        body = body[:2900] + "\n\n...(完整报告见仓库 reports/latest.md)"
+    return title, body
 
 
 def push_sct(key: str, title: str, desp: str) -> bool:

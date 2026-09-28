@@ -14,6 +14,7 @@ from .data import board_of
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE_DIR = os.path.join(BASE_DIR, "state")
 POOL_DIR = os.path.join(STATE_DIR, "pools")
+PRICE_DIR = os.path.join(STATE_DIR, "prices")   # 每日预测时刻快照价(T+1 结算价来源)
 SAMPLES = os.path.join(STATE_DIR, "samples.jsonl")
 TRACK = os.path.join(STATE_DIR, "track_record.json")
 MAX_POOL = 200          # 每日保存/标注的候选上限(控制请求量)
@@ -29,12 +30,58 @@ def save_pool(scored, date_tag=None):
     tag = date_tag or time.strftime("%Y%m%d")
     path = os.path.join(POOL_DIR, f"pool_{tag}.json")
     items = [{"code": s["code"], "name": s["name"], "prob": s["prob"],
+              "price": s.get("price"),           # 买入价 = 预测时刻快照价
               "features": {k: v for k, v in s["features"].items()}} for s in scored[:MAX_POOL]]
     with open(path, "w", encoding="utf-8") as fh:
         json.dump({"date": time.strftime("%Y-%m-%d"), "n_pool": len(scored),
                    "n_saved": len(items), "items": items}, fh, ensure_ascii=False)
     _log(f"  预测池已落盘: {path} ({len(items)} 条)")
     return path
+
+# ---------------- 每日预测时刻价快照(供 T+1 结算) ----------------
+def pool_codes():
+    """所有未标注预测池涉及的代码集合。"""
+    codes = set()
+    if not os.path.isdir(POOL_DIR):
+        return codes
+    for f in os.listdir(POOL_DIR):
+        if f.startswith("pool_") and f.endswith(".json"):
+            try:
+                with open(os.path.join(POOL_DIR, f), "r", encoding="utf-8") as fh:
+                    for it in json.load(fh).get("items", []):
+                        codes.add(it["code"])
+            except Exception:
+                continue
+    return codes
+
+def save_prices(snap, date_tag=None):
+    """保存预测时刻(约14:30)全池代码的快照价, 作为次日结算价来源。只存池内代码, 控制体积。"""
+    os.makedirs(PRICE_DIR, exist_ok=True)
+    tag = date_tag or time.strftime("%Y%m%d")
+    want = pool_codes()
+    px = {}
+    for row in snap:
+        if row["code"] in want and row.get("price"):
+            px[row["code"]] = round(float(row["price"]), 3)
+    path = os.path.join(PRICE_DIR, f"price_{tag}.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"date": time.strftime("%Y-%m-%d"), "n": len(px), "px": px},
+                  fh, ensure_ascii=False)
+    _log(f"  预测时刻价已存: {path} ({len(px)} 只, 用于次日收益结算)")
+    return path
+
+def _settle_price(code, target_date):
+    """目标日(T+1)预测时刻价 -> (价, '1430'); 无快照 -> (None, None)。"""
+    path = os.path.join(PRICE_DIR, f"price_{target_date.replace('-', '')}.json")
+    if not os.path.exists(path):
+        return None, None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            px = json.load(fh).get("px") or {}
+        v = px.get(code)
+        return (float(v), "1430") if v else (None, None)
+    except Exception:
+        return None, None
 
 # ---------------- 次日实测标注 ----------------
 def _next_day_result(code, pred_date):
@@ -59,6 +106,7 @@ def _next_day_result(code, pred_date):
     mult = 1.10 if board_of(code) == "main" else 1.20
     limit = round(prev_close * mult, 2)
     return {"ready": True, "next_date": r["date"], "next_pct": r.get("pct"),
+            "next_close": r["close"],
             "touch": r["high"] >= limit - 1e-6, "seal": r["close"] >= limit - 1e-6}
 
 def label_pool(path):
@@ -67,27 +115,45 @@ def label_pool(path):
         d = json.load(fh)
     pred_date = d["date"]
     items = d["items"]
-    samples, rates = [], []
+    samples, rates, rets = [], [], []
+    n_1430 = 0
     for i, it in enumerate(items):
         r = _next_day_result(it["code"], pred_date)
         if not r.get("ready"):
             _log(f"  池 {pred_date} 第{i}条({it['code']})不可标注: {r.get('why')} -> 池整体顺延")
             return None, None, False
+        # 收益: 买入价=预测时刻快照价, 结算价=次日预测时刻快照价(缺失则退化为次日收盘)
+        buy = it.get("price")
+        settle, src = _settle_price(it["code"], r["next_date"])
+        if settle is None:
+            settle, src = r.get("next_close"), "close"
+        if src == "1430":
+            n_1430 += 1
+        ret = round(settle / buy - 1, 4) if (buy and settle) else None
         row = dict(it["features"])
         row["_date"] = pred_date
         samples.append({"code": it["code"], "name": it["name"], "prob": it["prob"],
                         "label": int(r["touch"]), "seal": int(r["seal"]),
-                        "next_date": r["next_date"], "row": row})
+                        "next_date": r["next_date"], "row": row,
+                        "buy": buy, "settle": settle, "ret": ret, "ret_src": src})
         rates.append((int(r["touch"]), int(r["seal"])))
+        if ret is not None:
+            rets.append(ret)
     def rate_at(k):
         sub = rates[:k]
         n = len(sub)
         if not n: return None
         return {"touch": round(sum(x[0] for x in sub) / n, 4),
                 "seal": round(sum(x[1] for x in sub) / n, 4), "n": n}
+    def ret_at(k):
+        sub = [x for x in rets[:k] if x is not None]
+        n = len(sub)
+        if not n: return None
+        return {"ret": round(sum(sub) / n, 4), "win": round(sum(1 for x in sub if x > 0) / n, 4), "n": n}
     metrics = {"pred_date": pred_date, "labeled_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-               "n": len(samples),
-               "top5": rate_at(5), "top10": rate_at(10), "top30": rate_at(30)}
+               "n": len(samples), "ret_src_n": n_1430,
+               "top5": rate_at(5), "top10": rate_at(10), "top30": rate_at(30),
+               "ret5": ret_at(5), "ret10": ret_at(10), "ret30": ret_at(30)}
     return samples, metrics, True
 
 # ---------------- 样本库 ----------------
@@ -147,7 +213,29 @@ def track_summary(n=10):
         for k in ("top5", "top10", "top30"):
             v = t.get(k)
             line[k] = f"{v['touch']:.0%}/{v['seal']:.0%}" if v else "-"
+        for k in ("ret5", "ret10", "ret30"):
+            v = t.get(k)
+            line[k] = f"{v['ret']:+.1%}" if v else "-"
         out.append(line)
+    return out
+
+def ret_stats(n=10):
+    """近 n 日收益汇总: 各档平均日收益、胜率、等权累计(连乘)。"""
+    track = [t for t in load_track() if t.get("ret10") or t.get("ret5")][-n:]
+    if not track:
+        return None
+    out = {"days": len(track), "first": track[0]["pred_date"], "last": track[-1]["pred_date"]}
+    for k, key in (("top5", "ret5"), ("top10", "ret10"), ("top30", "ret30")):
+        vals = [t[key]["ret"] for t in track if t.get(key)]
+        wins = [t[key]["win"] for t in track if t.get(key)]
+        if not vals:
+            continue
+        cum = 1.0
+        for v in vals:
+            cum *= (1 + v)
+        out[k] = {"avg": round(sum(vals) / len(vals), 4),
+                  "win": round(sum(wins) / len(wins), 4),
+                  "cum": round(cum - 1, 4), "n": len(vals)}
     return out
 
 # ---------------- 主流程: 标注所有到期预测池 ----------------

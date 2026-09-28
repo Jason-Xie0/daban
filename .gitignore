@@ -6,3 +6,4 @@ _tmp/
 _*.txt
 t_*.txt
 .workbuddy/
+_*.py

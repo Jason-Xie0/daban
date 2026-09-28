@@ -5,7 +5,7 @@
 """
 import json, os, time, random, sys
 
-from . import data, features, model, reasoner, report, feedback, market
+from . import data, features, model, reasoner, report, feedback, market, sentiment
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE_DIR = os.path.join(BASE_DIR, "state")
@@ -21,14 +21,18 @@ def log(msg):
     print(line, flush=True)
 
 def ckpt_save(phase, extra=None):
-    """上下文压缩检查点: 把当前阶段与关键中间产物落盘, 供断点续跑。"""
-    os.makedirs(STATE_DIR, exist_ok=True)
-    d = {"phase": phase, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-         "context_bytes_approx": len(json.dumps(extra or {}, ensure_ascii=False, default=str))}
-    if extra: d.update(extra)
-    with open(CKPT, "w", encoding="utf-8") as fh:
-        json.dump(d, fh, ensure_ascii=False, indent=2, default=str)
-    log(f"⏬ 上下文压缩检查点 -> {phase} (约 {d['context_bytes_approx']} 字节)")
+    """上下文压缩检查点: 把当前阶段与关键中间产物落盘, 供断点续跑。
+    检查点是辅助产物, 写失败(偶发 PermissionError)绝不能中断主流程。"""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        d = {"phase": phase, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+             "context_bytes_approx": len(json.dumps(extra or {}, ensure_ascii=False, default=str))}
+        if extra: d.update(extra)
+        with open(CKPT, "w", encoding="utf-8") as fh:
+            json.dump(d, fh, ensure_ascii=False, indent=2, default=str)
+        log(f"⏬ 上下文压缩检查点 -> {phase} (约 {d['context_bytes_approx']} 字节)")
+    except Exception as e:
+        log(f"⚠️ 检查点写入失败(不影响主流程): {phase} {e}")
 
 # ============ 阶段1: 模型 ============
 TRAIN_CACHE = os.path.join(STATE_DIR, "train_cache.pkl")
@@ -169,6 +173,15 @@ def score_candidates(cands, news_items, snap=None, indices=None):
             f"5日累计 {mk['idx_mom5']:+.2f}% | 上涨占比 {mk['breadth_up']:.0%} | 涨停占比 {mk['zt_share']:.2%}")
     except Exception as e:
         log(f"⚠️ 大盘要素获取失败(按中性值处理): {e}")
+    # 舆情打分(真实新闻关键词情感, 只算候选股)
+    sent_map = {}
+    try:
+        sent_map = sentiment.analyze(news_items,
+                                     {c["code"]: c.get("name") for c in cands})
+        n_hot = sum(1 for v in sent_map.values() if v["heat"] > 0)
+        log(f"  舆情: {len(news_items)} 条资讯扫描完成, 候选中 {n_hot} 只有相关舆情")
+    except Exception as e:
+        log(f"⚠️ 舆情打分失败(按无舆情处理): {e}")
     log("阶段3c: 计算服务特征 + 模型打分 ...")
     rows, meta = [], []
     for c in cands:
@@ -182,12 +195,16 @@ def score_candidates(cands, news_items, snap=None, indices=None):
         nh = data.news_heat_for(code, c.get("name"), news_items)
         snapc["_news_n"] = nh["n"]
         snapc["_news_samples"] = nh.get("samples")
+        sv = sent_map.get(code) or {}
+        snapc["_sent_net"] = sv.get("net", 0)
+        snapc["_sent_heat"] = sv.get("heat", 0)
+        snapc["_sent"] = sv
         f = features.serve_features(code, hist, snapc)
         if f is None: continue
         f.update(mk)                       # 大盘要素: 当日全市场同一组值
         f["_board_name"] = boards.get(code, "")
         rows.append(f)
-        meta.append({"code": code, "name": c.get("name"), "snap": snapc, "news": nh})
+        meta.append({"code": code, "name": c.get("name"), "snap": snapc, "news": nh, "sent": sv})
     if not rows:
         log("  无有效特征(可能K线不足), 跳过打分")
         return []
@@ -197,7 +214,7 @@ def score_candidates(cands, news_items, snap=None, indices=None):
     for f, mt, p in zip(rows, meta, probs):
         scored.append({"code": mt["code"], "name": mt["name"], "prob": p,
                        "price": mt["snap"].get("price"),
-                       "features": f, "news": mt.get("news"),
+                       "features": f, "news": mt.get("news"), "sent": mt.get("sent") or {},
                        "today_pct": mt["snap"].get("pct"), "board": f.get("board"),
                        "industry": mt.get("snap", {}).get("_board_name")})
     scored.sort(key=lambda x: -x["prob"])
@@ -260,6 +277,8 @@ def run(force_train=False):
         "data_time": time.strftime("%Y-%m-%d %H:%M"),
         "market_summary": market_summary,
         "market_factors": dict(MARKET_SNAP),
+        "sent_summary": {"n_news": len(news_items),
+                         "n_stocks": sum(1 for v in sent_map.values() if v.get("heat"))},
         "indices": indices,
         "n_universe": len(snap), "n_limit_up_today": len(zt), "n_candidates": len(cands),
         "n_samples": m.get("n_samples"), "n_pos": m.get("n_pos"),
@@ -271,7 +290,8 @@ def run(force_train=False):
                  "price": s.get("price"),
                  "today_pct": s.get("today_pct"), "industry": s.get("industry"),
                  "reason": s["reason"], "reason_source": s["reason_source"],
-                 "detail": s["detail"], "news_n": s.get("news", {}).get("n", 0)}
+                 "detail": s["detail"], "news_n": s.get("news", {}).get("n", 0),
+                 "sent": s.get("sent") or {}}
                 for s in top],
     }
     md_path, js_path = report.save(result)

@@ -21,6 +21,10 @@ def render_markdown(result):
     if mf:
         lines.append(f"- **大盘要素(模型输入)**: 上证涨跌 {mf.get('idx_pct',0):+.2f}% | 上证对MA5偏离 {mf.get('idx_ma5_dev',0):+.2%} | "
                      f"5日累计 {mf.get('idx_mom5',0):+.2f}% | 全市场上涨占比 {mf.get('breadth_up',0):.1%} | 涨停占比 {mf.get('zt_share',0):.2%}")
+    ss = result.get("sent_summary") or {}
+    if ss:
+        lines.append(f"- **舆情(已参与打分)**: 扫描近36小时真实资讯 {ss.get('n_news',0)} 条, "
+                     f"候选中 {ss.get('n_stocks',0)} 只有相关舆情(关键词情感, 详见下方舆情扫描)")
     lines.append(f"- **模型样本**: 训练样本 {result.get('n_samples', '-')} 个, 触板正样本 {result.get('n_pos', '-')} 个, 基线触板率 {result.get('base_rate', 0):.2%}")
     bt = result.get("backtest") or {}
     if bt and "top10" in bt:
@@ -72,6 +76,21 @@ def render_markdown(result):
     lines.append("## 关键驱动因素说明")
     for s in result.get("top", [])[:10]:
         lines.append(f"- **{s['name']}({s['code']})**: {s.get('detail','')}")
+    sv = [s for s in result.get("top", []) if (s.get("sent") or {}).get("heat")]
+    if sv:
+        lines.append("")
+        lines.append("## 舆情扫描 (近36小时真实新闻关键词匹配, 已参与打分)")
+        lines.append("")
+        lines.append("| 代码 | 名称 | 净情感 | 利好关键词 | 利空关键词 |")
+        lines.append("|---|---|---|---|---|")
+        for s in sv[:10]:
+            v = s["sent"]
+            kw_p = "/".join(v.get("kw_pos") or []) or "—"
+            kw_n = "/".join(v.get("kw_neg") or []) or "—"
+            lines.append(f"| {s['code']} | {s['name']} | {v['net']:+.1f} | {kw_p} | {kw_n} |")
+        lines.append("")
+        lines.append("> 口径: 利好/利空各由约25个财经关键词匹配计数, 12小时内权重1.0、12~36小时0.5; "
+                     "净情感与热度经有界加成参与模型打分(与换手率/量比同层), 每个得分可回溯到具体新闻。")
     lines.append("")
     lines.append("## 免责声明")
     lines.append("本报告由量化模型自动生成，概率基于历史统计与实时特征，存在较大不确定性。"

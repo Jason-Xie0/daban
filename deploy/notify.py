@@ -59,8 +59,10 @@ def build_digest(md: str, top_n: int = 10) -> str:
             head.append(ln)
     parts = [ln for ln in head if "回测口径说明" not in ln]
     ret = section("预测收益实测", 24)
+    sent = section("舆情扫描", 8)
     top = section("次日涨停候选", top_n + 3)
-    body = "\n".join(parts + ([""] + ret if ret else []) + ([""] + top if top else []))
+    parts_out = parts + ([""] + ret if ret else []) + ([""] + sent if sent else []) + ([""] + top if top else [])
+    body = "\n".join(parts_out)
     if len(body) > 2900:
         body = body[:2900] + "\n\n...(完整报告见仓库 reports/latest.md)"
     return title, body

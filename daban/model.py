@@ -80,7 +80,7 @@ def _sigmoid(z):
     return 1 / (1 + np.exp(-np.clip(z, -30, 30)))
 
 def _serve_boost(rows):
-    """实时信号 -> logit 空间有界加成。每个因子映射到 [-0.15, +0.55]。"""
+    """实时信号 -> logit 空间有界加成。每个因子映射到 [0,1] 后加权。"""
     def clip01(x):
         return None if x is None else max(0.0, min(1.0, float(x)))
     z = np.zeros(len(rows))
@@ -89,8 +89,15 @@ def _serve_boost(rows):
         vr = clip01((r.get("snap_volratio") or 0) / 5)             # 量比 0~5 -> 0~1
         sp = (r.get("snap_sector_pct") or 0)
         sp = max(0.0, min(1.0, (sp + 2) / 8))                       # 板块 -2%~+6% -> 0~1
-        nn = clip01((r.get("snap_news_n") or 0) / 5)               # 新闻 0~5 -> 0~1
-        boost = 0.30 * (tr or 0) + 0.20 * (vr or 0) + 0.35 * sp + 0.15 * nn
+        nn = clip01((r.get("snap_news_n") or 0) / 5)               # 新闻条数 0~5 -> 0~1
+        # 舆情因子(情感净分+热度 -> [0,1], 无舆情中性 0.5)
+        try:
+            from .sentiment import boost_factor
+            sf = clip01(boost_factor(r.get("snap_sent_net") or 0,
+                                     r.get("snap_sent_heat") or 0))
+        except Exception:
+            sf = 0.5
+        boost = 0.24 * (tr or 0) + 0.16 * (vr or 0) + 0.28 * sp + 0.09 * nn + 0.23 * sf
         z[i] = boost * 1.0 - 0.15  # 映射到约 [-0.15, +0.85]
     return np.clip(z, -0.15, 0.85)
 

@@ -7,3 +7,5 @@ _*.txt
 t_*.txt
 .workbuddy/
 _*.py
+state-old-*/
+.venv/

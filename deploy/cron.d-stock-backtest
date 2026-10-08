@@ -1,0 +1,5 @@
+# 股票回测批处理 — 每周日 02:00 重建样本库 + 完整走前回测
+# 由 WorkBuddy 于 2026-10-08 部署；调整频率改本文件后重启 cron 即可
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 2 * * 0 dnwz2000 /vol1/ai-stack/stock-backtest/deploy/run_backtest_nas.sh --rebuild

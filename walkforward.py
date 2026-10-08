@@ -21,6 +21,10 @@ def main():
     t0 = time.time()
     log("1) 加载滚动样本库 ...")
     rows, y = feedback.load_samples()
+    # 补齐大盘要素(idx_pct/idx_ma5_dev/idx_mom5/breadth_up/zt_share)。
+    # CORE_FEATURES 含这 5 列, 但 backfill_history.py 未注入 -> 缺失时直接 KeyError。
+    from daban import market
+    market.attach(rows, market.index_map(400), market.daily_breadth(rows))
     if len(rows) < 20000:
         log(f"样本库不足({len(rows)}), 请先运行 backfill_history.py")
         return

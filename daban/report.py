@@ -101,7 +101,7 @@ def render_markdown(result):
 
 def save(result, date_tag=None):
     os.makedirs(REPORT_DIR, exist_ok=True)
-    tag = date_tag or time.strftime("%Y%m%d_%H%M")
+    tag = date_tag or time.strftime("%Y%m%d_%H%M", time.gmtime(time.time() + 8 * 3600))
     md_path = os.path.join(REPORT_DIR, f"打板预测_{tag}.md")
     js_path = os.path.join(REPORT_DIR, f"打板预测_{tag}.json")
     md = render_markdown(result)

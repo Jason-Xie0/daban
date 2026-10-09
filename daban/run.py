@@ -273,8 +273,9 @@ def run(force_train=False):
     top = scored[:TOP_N]
     attach_reasons(top)
     result = {
-        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "data_time": time.strftime("%Y-%m-%d %H:%M"),
+        # 统一用北京时间(UTC+8): 云端 runner 为 UTC 时区, 直接用 time.strftime 会显示 UTC 时间
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 8 * 3600)),
+        "data_time": time.strftime("%Y-%m-%d %H:%M", time.gmtime(time.time() + 8 * 3600)),
         "market_summary": market_summary,
         "market_factors": dict(MARKET_SNAP),
         "sent_summary": {"n_news": len(news_items),

@@ -278,7 +278,7 @@ def run(force_train=False):
         "market_summary": market_summary,
         "market_factors": dict(MARKET_SNAP),
         "sent_summary": {"n_news": len(news_items),
-                         "n_stocks": sum(1 for v in sent_map.values() if v.get("heat"))},
+                         "n_stocks": sum(1 for s in scored if (s.get("sent") or {}).get("heat"))},
         "indices": indices,
         "n_universe": len(snap), "n_limit_up_today": len(zt), "n_candidates": len(cands),
         "n_samples": m.get("n_samples"), "n_pos": m.get("n_pos"),

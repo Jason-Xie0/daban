@@ -10,8 +10,8 @@ GitHub Secrets 里配一个 DABAN_PUSH_KEY 即可, 无其他配置。
 用法: python deploy/notify.py reports/latest.md
 """
 import os
-import re
 import sys
+import time
 
 import requests
 
@@ -85,8 +85,33 @@ def push_pushplus(token: str, title: str, content: str) -> bool:
     return ok
 
 
+def _push(key: str, title: str, body: str) -> bool:
+    if key.upper().startswith("SCT"):
+        return push_sct(key, title, body)
+    return push_pushplus(key, title, body)
+
+
+def alert(reason: str) -> int:
+    """云端运行失败告警: 避免失败静默数日无人察觉。"""
+    key = os.environ.get("DABAN_PUSH_KEY", "").strip()
+    if not key:
+        print("[notify] 未配置 DABAN_PUSH_KEY, 跳过告警")
+        return 0
+    title = "⚠️ 打板预测云端运行失败"
+    body = (f"**时间(UTC)**: {time.strftime('%Y-%m-%d %H:%M')}\n\n"
+            f"**原因**: {reason}\n\n"
+            "本次**未产出预测报告**。请到 Actions 日志排查:\n"
+            "https://github.com/Jason-Xie0/daban/actions\n\n"
+            "> 若连续多日无报告, 请人工介入。")
+    ok = _push(key, title, body)
+    return 0 if ok else 1
+
+
 def main() -> int:
-    path = sys.argv[1] if len(sys.argv) > 1 else "reports/latest.md"
+    args = sys.argv[1:]
+    if args and args[0] == "--alert":
+        return alert(args[1] if len(args) > 1 else "未捕获到具体原因")
+    path = args[0] if args else "reports/latest.md"
     if not os.path.exists(path):
         print(f"[notify] 报告不存在: {path}, 跳过推送")
         return 0
@@ -95,10 +120,7 @@ def main() -> int:
         print("[notify] 未配置 DABAN_PUSH_KEY, 跳过推送")
         return 0
     title, text = build_digest(load_report(path))
-    if key.upper().startswith("SCT"):
-        ok = push_sct(key, title, text)
-    else:
-        ok = push_pushplus(key, title, text)
+    ok = _push(key, title, text)
     return 0 if ok else 1
 
 

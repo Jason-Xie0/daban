@@ -74,9 +74,19 @@ TDX_SERVERS = [
     ("hq.cjsc.com.cn", 7709),   # 武汉主站(域名, 境内网络可解析)
 ]
 
-# 通道开关: 2026-10-07 实测长江真实主站可用后, 默认开启。
-# 海外云端若连不通, 会自动熔断并回落到东财/腾讯/同花顺, 不影响主链路。
-TDX_ENABLED = True
+# 通道开关: 2026-10-07 实测长江真实主站可用后默认开启。
+# 但 GitHub Actions 等**海外云端**连不通境内主站, 会逐个超时(21 站×6s)严重拖慢主链路,
+# 故云端默认关闭, 仅本机/AI服务器(境内网络)启用。
+#   环境变量 DABAN_TDX=1 强制开启 / =0 强制关闭; 未设时按是否在 GitHub Actions 自动判断。
+import os as _os
+
+_TDX_ENV = _os.environ.get("DABAN_TDX")
+if _TDX_ENV == "0":
+    TDX_ENABLED = False
+elif _TDX_ENV == "1":
+    TDX_ENABLED = True
+else:
+    TDX_ENABLED = _os.environ.get("GITHUB_ACTIONS") != "true"
 
 _TIMEOUT = 6
 _api = None

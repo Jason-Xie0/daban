@@ -45,6 +45,13 @@ jobs:
           DABAN_PUSH_KEY: ${{ secrets.DABAN_PUSH_KEY }}
         run: python deploy/notify.py reports/latest.md
 
+      - name: 失败告警(微信; 避免失败静默无人知)
+        if: failure()
+        continue-on-error: true
+        env:
+          DABAN_PUSH_KEY: ${{ secrets.DABAN_PUSH_KEY }}
+        run: python deploy/notify.py --alert "云端预测步骤或回写步骤失败, 本次未产出报告"
+
       - name: 归档最新报告
         uses: actions/upload-artifact@v4
         with:

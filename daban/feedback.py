@@ -34,8 +34,10 @@ def save_pool(scored, date_tag=None):
               "features": {k: v for k, v in s["features"].items()}} for s in scored[:MAX_POOL]]
     with open(path, "w", encoding="utf-8") as fh:
         json.dump({"date": time.strftime("%Y-%m-%d"), "n_pool": len(scored),
-                   "n_saved": len(items), "items": items}, fh, ensure_ascii=False)
-    _log(f"  预测池已落盘: {path} ({len(items)} 条)")
+                   "n_saved": len(items),
+                   "note": "可买池: 预测时刻已封涨停(买不进)的标的不在池内",
+                   "items": items}, fh, ensure_ascii=False)
+    _log(f"  预测池已落盘: {path} ({len(items)} 条, 可买口径)")
     return path
 
 # ---------------- 每日预测时刻价快照(供 T+1 结算) ----------------

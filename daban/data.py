@@ -24,6 +24,35 @@ def is_limit_up(pct, code) -> bool:
     except (TypeError, ValueError): return False
     return pct >= LIMIT_PCT[board_of(code)]
 
+# 各板块涨停幅度(由昨收推算涨停价)
+LIMIT_MULT = {"main": 1.10, "cy": 1.20, "kc": 1.20, "bj": 1.30}
+
+def limit_up_price(code, prev_close):
+    """由昨收推算涨停价(与交易所一致: 标准四舍五入到分)。
+    注: ST 股为 5% 限制, 但候选池已排除 ST。
+    不使用快照里的 limit_up 字段——东财源该字段(f15)实为当日最高价, 语义不一致。"""
+    if not prev_close: return None
+    try:
+        from decimal import Decimal, ROUND_HALF_UP
+        d = (Decimal(str(prev_close)) * Decimal(str(LIMIT_MULT[board_of(code)]))
+             ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return float(d)
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+
+def is_sealed(x) -> bool:
+    """预测时刻该股是否已封涨停 —— 封板则挂单买不进, 不应纳入推荐。
+    主判据: 现价 >= 由昨收精确推算的涨停价;
+    缺昨收/现价时退化为涨幅阈值判断。"""
+    code = x.get("code")
+    price, lu = x.get("price"), limit_up_price(code, x.get("prev_close"))
+    if lu and price:
+        try:
+            return float(price) >= lu - 0.001
+        except (TypeError, ValueError):
+            pass
+    return is_limit_up(x.get("pct"), code)
+
 # ---------------- HTTP ----------------
 _EM_BLOCKED_UNTIL = 0.0   # 东财熔断: 连续失败后一段时间内快速失败, 不再等待重试
 

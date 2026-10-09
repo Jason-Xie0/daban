@@ -16,6 +16,12 @@ def render_markdown(result):
     lines.append("")
     lines.append(f"- **生成时间**: {result.get('generated_at')}")
     lines.append(f"- **数据时点**: {result.get('data_time')} (盘中) —— 表中\"买入参考价\"即本时刻快照价, 次日同一时刻价作为收益结算价")
+    n_reco = result.get("n_recommend")
+    n_sealed = result.get("n_sealed_filtered")
+    cap = result.get("recommend_cap", 10)
+    if n_reco is not None:
+        lines.append(f"- **选股口径**: 仅推荐预测时刻(约14:30)仍**可买入**的标的 —— 当时已封涨停(挂单买不进)的 "
+                     f"{n_sealed if n_sealed is not None else '-'} 只已剔除; 本期推荐 **{n_reco}** 只 (上限 {cap} 只)")
     lines.append(f"- **市场状态**: " + result.get("market_summary", ""))
     mf = result.get("market_factors") or {}
     if mf:
@@ -57,24 +63,27 @@ def render_markdown(result):
                 continue
             lines.append(f"| {name} | {v['avg']:+.2%} | {v['win']:.0%} | {v['cum']:+.2%} |")
         lines.append("")
-        lines.append("> 口径说明: 买入价取预测当刻(约14:30)快照价, 结算价取**次日预测当刻**快照价; "
-                     "该日快照缺失时退化为次日收盘价(已在档案中标记)。收益为等权、未计交易成本与滑点, "
-                     "打板标的常存在开盘一字无法买入的情形, 实际可得收益低于此表。")
+        lines.append("> 口径说明: 池内标的均为**预测时刻可买入**的标的(当时已封涨停、挂单买不进的未纳入); "
+                     "买入价取预测当刻(约14:30)快照价, 结算价取**次日预测当刻**快照价; "
+                     "该日快照缺失时退化为次日收盘价(已在档案中标记)。收益为等权、未计交易成本与滑点; "
+                     "仍需注意次日开盘一字板无法买入的尾部风险, 实际可得收益可能低于此表。")
     lines.append("")
     lines.append("> ⚠️ 本预测基于真实行情/量能/板块/资讯数据与历史回测，概率为模型估计值，**不构成投资建议**。涨停不可保证，请注意风险。")
     lines.append("")
-    lines.append("## 次日涨停候选 Top 榜")
+    lines.append("## 次日涨停候选 Top 榜 (仅可买入标的)")
+    lines.append("")
+    lines.append(f"> 已剔除预测时刻封涨停(买不进)的标的, 按模型概率降序, 最多 {result.get('recommend_cap', 10)} 只。")
     lines.append("")
     lines.append("| 排名 | 代码 | 名称 | 买入参考价 | 预测涨停概率 | 评级 | 简要理由 |")
     lines.append("|---|---|---|---|---|---|---|")
-    for i, s in enumerate(result.get("top", []), 1):
+    for i, s in enumerate(result.get("top", [])[:cap], 1):
         reason = (s.get("reason") or "").replace("|", "/")
         px = s.get("price")
         px_s = f"{px:.2f}" if isinstance(px, (int, float)) else "-"
         lines.append(f"| {i} | {s['code']} | {s['name']} | {px_s} | **{s['prob']:.1%}** | {_rank(s['prob'])} | {reason} |")
     lines.append("")
     lines.append("## 关键驱动因素说明")
-    for s in result.get("top", [])[:10]:
+    for s in result.get("top", [])[:cap]:
         lines.append(f"- **{s['name']}({s['code']})**: {s.get('detail','')}")
     sv = [s for s in result.get("top", []) if (s.get("sent") or {}).get("heat")]
     if sv:

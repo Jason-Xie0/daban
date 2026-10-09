@@ -10,7 +10,8 @@ from . import data, features, model, reasoner, report, feedback, market, sentime
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE_DIR = os.path.join(BASE_DIR, "state")
 CKPT = os.path.join(STATE_DIR, "checkpoint.json")
-TOP_N = 30
+TOP_N = 30            # 内部保留候选数(落池/生成理由用)
+RECOMMEND_N = 10      # 对外推荐上限(用户要求: 只推可买入的, 且不超过 10 只)
 CANDIDATE_POOL = 400
 TRAIN_UNIVERSE = 600
 TRAIN_DAYS = 120
@@ -216,6 +217,7 @@ def score_candidates(cands, news_items, snap=None, indices=None):
                        "price": mt["snap"].get("price"),
                        "features": f, "news": mt.get("news"), "sent": mt.get("sent") or {},
                        "today_pct": mt["snap"].get("pct"), "board": f.get("board"),
+                       "sealed": data.is_sealed(mt["snap"]),   # 预测时刻已封涨停(买不到)
                        "industry": mt.get("snap", {}).get("_board_name")})
     scored.sort(key=lambda x: -x["prob"])
     top = scored[:TOP_N]
@@ -266,11 +268,18 @@ def run(force_train=False):
     if not scored:
         log("⚠️ 无有效候选, 退出")
         return None
+    # 用户口径(2026-10-09): 只推荐预测时刻**仍可买入**的标的——已封涨停者挂单买不进,
+    # 不予推荐; 每期推荐总数不超过 RECOMMEND_N(10) 只。
+    # 落池同样只用可买池, 否则收益统计会把买不进的标的算进去, 虚高失真。
+    buyable = [s for s in scored if not s.get("sealed")]
+    n_sealed = len(scored) - len(buyable)
+    log(f"  可买筛选: 剔除预测时刻已封板(买不进) {n_sealed} 只, 可买 {len(buyable)} 只 "
+        f"(推荐上限 {RECOMMEND_N})")
     try:
-        feedback.save_pool(scored)   # 落盘预测池, 供 T+2 运行时标注回测
+        feedback.save_pool(buyable)   # 落盘(可买)预测池, 供次日运行时标注回测
     except Exception as e:
         log(f"⚠️ 预测池落盘失败: {e}")
-    top = scored[:TOP_N]
+    top = buyable[:RECOMMEND_N]
     attach_reasons(top)
     result = {
         # 统一用北京时间(UTC+8): 云端 runner 为 UTC 时区, 直接用 time.strftime 会显示 UTC 时间
@@ -282,6 +291,8 @@ def run(force_train=False):
                          "n_stocks": sum(1 for s in scored if (s.get("sent") or {}).get("heat"))},
         "indices": indices,
         "n_universe": len(snap), "n_limit_up_today": len(zt), "n_candidates": len(cands),
+        "n_scored": len(scored), "n_sealed_filtered": n_sealed, "n_recommend": len(top),
+        "recommend_cap": RECOMMEND_N,
         "n_samples": m.get("n_samples"), "n_pos": m.get("n_pos"),
         "base_rate": m.get("base_rate", 0), "model_auc": m.get("auc"),
         "backtest": bt or {},

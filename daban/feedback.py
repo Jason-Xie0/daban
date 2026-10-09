@@ -84,30 +84,51 @@ def _settle_price(code, target_date):
         return None, None
 
 # ---------------- 次日实测标注 ----------------
+_TDAYS_CACHE = None
+
+def _trading_days():
+    """交易日历(近40个交易日), 用上证指数日K的日期序列。进程内缓存。"""
+    global _TDAYS_CACHE
+    if _TDAYS_CACHE is None:
+        kl = data.fetch_kline("000001", 40, market=1)   # 上证指数
+        _TDAYS_CACHE = [r["date"] for r in kl] if kl else []
+    return _TDAYS_CACHE
+
 def _next_day_result(code, pred_date):
-    """pred_date 次一交易日(且已收盘)的真实表现。未到/未完成返回 ready=False。"""
-    today = time.strftime("%Y-%m-%d")
+    """pred_date 次一交易日(且已收盘)的真实表现。用指数交易日历确定"次日";
+
+    个股在该日无K线(停牌) -> 返回 skip=True, 由调用方跳过该股(不拖累整池)。
+    """
+    tdays = _trading_days()
+    after = [d for d in tdays if d > pred_date]
+    if not after:
+        return {"ready": False, "why": "目标日未完成"}
+    next_td = after[0]
+    bj = time.gmtime(time.time() + 8 * 3600)        # 北京时间
+    today = time.strftime("%Y-%m-%d", bj)
+    closed = (bj.tm_hour, bj.tm_min) >= (15, 0)
+    if next_td > today or (next_td == today and not closed):
+        return {"ready": False, "why": "目标日未完成"}
     kl = []
     for i in range(3):
-        kl = data.fetch_kline(code, 30)
+        kl = data.fetch_kline(code, 40)
         if kl:
             break
         time.sleep(0.6 * (i + 1))
     if not kl:
-        return {"ready": False, "why": "无K线"}
-    nxt = [r for r in kl if pred_date < r["date"] < today]
-    if not nxt:
-        return {"ready": False, "why": "目标日未完成"}
+        return {"ready": False, "why": "无K线", "skip": True}
     prev = [r for r in kl if r["date"] <= pred_date]
     if not prev:
-        return {"ready": False, "why": "预测日无交易"}
+        return {"ready": False, "why": "预测日无交易", "skip": True}
+    row = next((r for r in kl if r["date"] == next_td), None)
+    if row is None:
+        return {"ready": False, "why": f"个股{next_td}无交易(停牌?)", "skip": True}
     prev_close = prev[-1]["close"]
-    r = nxt[0]
     mult = 1.10 if board_of(code) == "main" else 1.20
     limit = round(prev_close * mult, 2)
-    return {"ready": True, "next_date": r["date"], "next_pct": r.get("pct"),
-            "next_close": r["close"],
-            "touch": r["high"] >= limit - 1e-6, "seal": r["close"] >= limit - 1e-6}
+    return {"ready": True, "next_date": row["date"], "next_pct": row.get("pct"),
+            "next_close": row["close"],
+            "touch": row["high"] >= limit - 1e-6, "seal": row["close"] >= limit - 1e-6}
 
 def label_pool(path):
     """标注一个预测池。全部可标注 -> 返回 (samples, metrics, True)；未就绪 -> (None, None, False)。"""
@@ -120,6 +141,10 @@ def label_pool(path):
     for i, it in enumerate(items):
         r = _next_day_result(it["code"], pred_date)
         if not r.get("ready"):
+            if r.get("skip"):
+                # 个股问题(停牌/无数据): 跳过该股, 不让整池顺延
+                _log(f"  池 {pred_date} 第{i}条({it['code']})跳过(不影响整池): {r.get('why')}")
+                continue
             _log(f"  池 {pred_date} 第{i}条({it['code']})不可标注: {r.get('why')} -> 池整体顺延")
             return None, None, False
         # 收益: 买入价=预测时刻快照价, 结算价=次日预测时刻快照价(缺失则退化为次日收盘)
@@ -150,6 +175,9 @@ def label_pool(path):
         n = len(sub)
         if not n: return None
         return {"ret": round(sum(sub) / n, 4), "win": round(sum(1 for x in sub if x > 0) / n, 4), "n": n}
+    if not samples:
+        _log(f"  池 {pred_date} 无可用标注(个股全部跳过), 暂不落库")
+        return None, None, False
     metrics = {"pred_date": pred_date, "labeled_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                "n": len(samples), "ret_src_n": n_1430,
                "top5": rate_at(5), "top10": rate_at(10), "top30": rate_at(30),

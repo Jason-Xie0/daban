@@ -6,7 +6,7 @@
 import json, os
 import requests
 
-LLM_BASE = os.environ.get("DABAN_LLM_BASE", "http://192.168.1.9:8081/v1")
+LLM_BASE = os.environ.get("DABAN_LLM_BASE", "http://192.168.1.55:8081/v1")
 LLM_MODEL = os.environ.get("DABAN_LLM_MODEL", "")  # 空=自动取 /models 第一个
 LLM_TIMEOUT = int(os.environ.get("DABAN_LLM_TIMEOUT", "180"))
 

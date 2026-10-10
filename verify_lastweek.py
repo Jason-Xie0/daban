@@ -18,7 +18,7 @@ def next_day_result(code, pred_date):
     import time as _t
     kl = []
     for i in range(4):  # 偶发失败重试
-        kl = data.fetch_kline(code, 30)
+        kl = data.fetch_kline(code, 30, data.market_of(code))
         if kl:
             break
         _t.sleep(0.6 * (i + 1))

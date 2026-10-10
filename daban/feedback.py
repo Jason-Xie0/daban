@@ -113,7 +113,7 @@ def _next_day_result(code, pred_date):
         return {"ready": False, "why": "目标日未完成"}
     kl = []
     for i in range(3):
-        kl = data.fetch_kline(code, 40)
+        kl = data.fetch_kline(code, 40, data.market_of(code))   # 必须按个股所属市场取, 否则东财会串到指数
         if kl:
             break
         time.sleep(0.6 * (i + 1))

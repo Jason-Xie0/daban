@@ -185,9 +185,11 @@ def _f(v):
         return None
 
 # ---------------- 历史K线 ----------------
-def fetch_kline_tx(code: str, days=120):
-    """备用源: 腾讯行情日K(前复权)。东财K线被限流时自动切换。"""
-    mkt = "sh" if code.startswith(("6", "9", "5")) else "sz"
+def fetch_kline_tx(code: str, days=120, mkt: str = None):
+    """备用源: 腾讯行情日K(前复权)。东财K线被限流时自动切换。
+    mkt: 显式指定 "sh"/"sz"(取指数时必须), 缺省按代码前缀推断。"""
+    if mkt is None:
+        mkt = "sh" if code.startswith(("6", "9", "5")) else "sz"
     start = time.strftime("%Y-%m-%d", time.localtime(time.time() - days * 2.2 * 86400))
     end = time.strftime("%Y-%m-%d")
     try:
@@ -213,9 +215,15 @@ def fetch_kline_tx(code: str, days=120):
         prev = c
     return rows
 
-def _quote_one(code: str):
-    """单只实时快照(腾讯), 返回 dict 或 None。用于给滞后的日K补最新一根。"""
-    mkt = "sh" if code.startswith(("6", "9", "5")) else "sz"
+def _quote_one(code: str, market: int = None):
+    """单只实时快照(腾讯), 返回 dict 或 None。用于给滞后的日K补最新一根 + 校验基准。
+
+    market: 1=沪(指数用 sh 前缀), 0=深; 缺省按代码前缀推断。
+    """
+    if market is None:
+        mkt = "sh" if code.startswith(("6", "9", "5")) else "sz"
+    else:
+        mkt = "sh" if market == 1 else "sz"
     try:
         r = _get(f"http://qt.gtimg.cn/q={mkt}{code}", timeout=6)
         r.encoding = "gbk"
@@ -232,11 +240,12 @@ def _quote_one(code: str):
     except Exception:
         return None
 
-def _patch_last_bar(code: str, rows):
+def _patch_last_bar(code: str, rows, q=None):
     """K线滞后时, 用实时快照补上最新一根日K(仅当价格基准一致, 避免复权错配)。"""
     if not rows:
         return rows
-    q = _quote_one(code)
+    if q is None:
+        q = _quote_one(code)
     if not q:
         return rows
     today = time.strftime("%Y-%m-%d")
@@ -252,17 +261,39 @@ def _patch_last_bar(code: str, rows):
                     "turnover": q["turnover"]}]
     return rows
 
-def fetch_kline(code: str, days=120, market: int = 1):
-    """多源K线: 东财 -> 腾讯 -> 同花顺 -> 通达信(券商协议, 可选);
-    结果滞后于当日时用实时快照补齐。返回按日期升序 list[dict]。"""
-    rows = _fetch_kline_em(code, days, market)
-    if not rows:
-        rows = fetch_kline_tx(code, days)
-    if not rows:
-        rows = _fetch_kline_ths(code, days)
-    if not rows:
-        rows = _fetch_kline_tdx(code, days)
-    return _patch_last_bar(code, rows)
+def _kline_sane(rows, q) -> bool:
+    """用实时快照校验K线基准: 防止取错标的 / 后复权错配(数值差量级)。
+
+    快照取不到(停牌等)时视为通过, 不做判断。
+    """
+    if not q or not rows:
+        return True
+    last = rows[-1].get("close")
+    ref = q.get("prev_close") or q.get("close")
+    if not last or not ref:
+        return True
+    return abs(ref - last) / last <= 0.15
+
+def fetch_kline(code: str, days=120, market: int = None):
+    """多源K线: 东财 -> 腾讯 -> 同花顺 -> 通达信(券商协议, 可选)。
+
+    每个源的结果先用实时快照校验基准(防取错标的/复权错配), 通过后才补齐最新一根;
+    全军覆没时返回 [] (宁缺勿错, 由调用方按跳过处理)。
+    market 缺省按代码前缀推断(1=沪, 0=深), 取上证指数等需显式传 market=1。
+    返回按日期升序 list[dict]。
+    """
+    if market is None:
+        market = market_of(code)
+    mkt = "sh" if market == 1 else "sz"
+    q = _quote_one(code, market)                 # 一次快照: 校验 + 补最新一根共用
+    for rows in (_fetch_kline_em(code, days, market), fetch_kline_tx(code, days, mkt),
+                 _fetch_kline_ths(code, days), _fetch_kline_tdx(code, days)):
+        if not rows:
+            continue
+        if _kline_sane(rows, q):
+            return _patch_last_bar(code, rows, q)
+        # 被拒的源不落数据(拒绝静默, 避免刷屏)
+    return []
 
 
 def _fetch_kline_ths(code, days=120):
@@ -293,8 +324,13 @@ def _fetch_kline_em(code: str, days=120, market: int = 1):
                     "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
                     "klt": "101", "fqt": "1", "beg": beg, "end": "20500101", "l": str(days), "secid": secid},
             headers={"Referer": "https://quote.eastmoney.com/"}, timeout=8))
-        kl = (d.get("data") or {}).get("klines") or []
+        node = d.get("data") or {}
+        kl = node.get("klines") or []
     except Exception:
+        return []
+    # secid 市场前缀写错时, 东财可能返回同代码的其它标的(如 1.000002=上证A股指数),
+    # 用返回体里的 code 反查, 不一致直接弃用, 让调用方落到下一个源。
+    if kl and str(node.get("code") or "").strip().lstrip("0") != str(code).lstrip("0"):
         return []
     rows = []
     for s in kl:
